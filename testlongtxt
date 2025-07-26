@@ -395,7 +395,7 @@ left JOIN (
           AND vip_level > 0
    ) AS t1
    left join (
-     	select uid,stats_date,sum(amount_u) AS amount_u1
+     	select uid,stats_date,sum(amount_u) AS amount_u
         from trade_day_data
      	GROUP BY 1,2
    ) AS t2 -- 次留数据
