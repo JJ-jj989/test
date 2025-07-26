@@ -1,0 +1,406 @@
+with   trade_type_name_mapping AS (
+        SELECT  id
+               ,CASE WHEN id in(3,4) THEN '标准合约自主'
+                     WHEN id = 8 THEN '标准合约跟单'
+                     WHEN id = 5 THEN '永续合约自主'
+                     WHEN id = 11 THEN '永续合约网格自主'
+                     WHEN id = 9 THEN '永续合约仓位跟单'
+                     WHEN id = 10 THEN '币安合约跟单'
+                     WHEN id = 1 THEN '现货自主直接'
+                     WHEN id = 2 THEN '现货(标准)网格自主'
+                     WHEN id = 16 THEN '现货无限网格自主'
+                     WHEN id = 7 THEN '现货网格跟单'
+                     WHEN id = 17 THEN 'MT5交易自主'
+                     WHEN id = 18 THEN '永续合约固定保证金跟单'
+                     WHEN id = 20 THEN '现货单笔跟单'
+                     when id = 21 then '现货单笔带单'
+                     when id= 22 then '永续币本位自主'
+                     ELSE name end name
+        FROM dim.dim_trade_final_type
+),	user as (select distinct uid from 
+                 (select e.uid ,CASE WHEN f.first_date IS NULL OR f.first_date > e.dt THEN '未入金用户'
+     		   WHEN DATEDIFF(e.dt, f.first_date) BETWEEN 0 AND 13 THEN '新用户'
+               WHEN DATEDIFF(e.dt, f.first_date ) > 13 THEN '老用户'
+             END AS user_type from (select uid,dt,vip_level from dwd.dwd_user_info_ss where dt between '${begin_date}' and '${end_date}') AS e 
+  LEFT JOIN (
+           SELECT a.uid,
+                  MIN(a.first_date) AS first_date
+           FROM dws.dws_trade_first_type_order a
+           GROUP BY 1 
+        ) AS f ON e.uid = f.uid 
+                 )a
+   ${if(len(user_type_limit) > 0, "where user_type IN ('" + user_type_limit + "')", "")}
+   ),
+user_apply_type as (  -- 不需要限制进入活动页，也要限制报名时间段 
+select user_info.uid
+       ,case when t1.uid is null then '未参与'
+             when t1.uid is not null then '参与' end as apply_type,activity_id
+
+  from dwd.dwd_user_info user_info
+  left join (
+                    select 
+                            distinct uid ,activity_id
+                    from dwd.dwd_activity_apply_user_info 
+                    where  status=1 
+    and date(create_time) between '${begin_date}' AND '${end_date}'
+      ${if(len(activity_id_limit) > 0, "and activity_id IN (" + activity_id_limit + ")", "")}
+                ) t1 on user_info.uid=t1.uid
+ where user_info.reg_date<'${begin_date}'
+),
+res1 as (
+select activity_id as 活动id
+		,case when t1.stats_date between date(date_add('${begin_date}', -1-datediff('${end_date}','${begin_date}'))) and date(date_add('${begin_date}',-1)) then '基期'
+            when t1.stats_date between '${begin_date}' and '${end_date}' then '观察期' end as 所处阶段
+       ,  case 
+        when '${date_typ}' = '日' then cast(dt.dt as varchar) 
+        when '${date_typ}' = '周' then cast(dt.yearweek_day as varchar)
+        when '${date_typ}' = '月' then cast(dt.yearmonth as varchar) 
+        when '${date_typ}' = '季' then cast(dt.yearqtr as varchar)  
+    end as 日期
+       ,t2.apply_type as 是否参与活动
+       ,sum(t1.amount_u) as 交易额
+  from dws.dws_trade_type_day t1
+    LEFT JOIN trade_type_name_mapping AS c
+        ON t1.final_trade_type = c.id
+        join user cc on t1.uid=cc.uid
+  left join dim.dim_date dt on t1.stats_date=dt.dt
+  join user_apply_type t2 on t1.uid=t2.uid
+ where stats_date between date(date_add('${begin_date}', -1-datediff('${end_date}','${begin_date}'))) and '${end_date}'
+   and t1.uid in (select uid from user_apply_type)
+   and t1.amount_u>0
+    ${if(len(final_trade_type_limit) > 0, "and c.name IN ('" + final_trade_type_limit + "')", "")}
+    ${if(len(final_trade_type) > 0, "and t1.final_trade_type IN ('" + final_trade_type + "')", "")}
+ group by 1,2,3,4
+ ),
+ res2 as (select 日期,活动ID ,max(观察期交易额/基期交易额-(未参与观察期交易额/未参与基期交易额) ) as 整体交易额提升幅度 from (
+   select 日期,活动ID,case when 所处阶段='观察期' then 交易额 end as 观察期交易额,
+   case when 所处阶段='基期' then 交易额 end  as 基期交易额,
+   case when 所处阶段='观察期' and 是否参与活动='未参与' then 交易额 end  as 未参与观察期交易额,
+   case when 所处阶段='基期' and 是否参与活动='未参与' then 交易额 end as 未参与基期交易额
+   from res1 
+ )a group by 1,2)
+
+,trade_day_data AS (
+    select uid,stats_date,amount_u
+    from dws.dws_trade_type_day a
+    LEFT JOIN dim.dim_trade_final_type b
+        ON a.final_trade_type = b.id
+    LEFT JOIN trade_type_name_mapping AS c
+        ON b.id = c.id
+    where -- b.is_cntr=1 And
+        amount_u > 0
+        and stats_date between '${begin_date}' and date_add('${end_date}',interval 1 day)
+        ${if(len(final_trade_type_limit) > 0, "and c.name IN ('" + final_trade_type_limit + "')", "")}
+)
+,ftt_data AS (
+        	SELECT uid,first_date
+          	FROM (
+                SELECT uid,min(date(create_time)) AS first_date
+                FROM dws.dws_trade_user_type_stats AS a
+                LEFT JOIN  dim.dim_trade_final_type b
+                    ON a.final_trade_type = b.id
+                LEFT JOIN trade_type_name_mapping AS c
+                    ON b.id = c.id
+                ${if(len(final_trade_type_limit) > 0, "where c.name IN ('" + final_trade_type_limit + "')", "")}
+              	GROUP BY 1 -- 日期区间内有对应交易类型的首交用户
+            ) AS t
+          	WHERE first_date between '${begin_date}' and '${end_date}'
+        ),
+m as 
+(
+     select 
+    case 
+        when '${date_typ}' = '日' then 文本日期
+        when '${date_typ}' = '周' then 周
+        when '${date_typ}' = '月' then 月
+        when '${date_typ}' = '季' then 季
+    end as 日期,
+         activity_level,
+             activity_type_name,
+creator,
+begin_time,
+end_time,
+activity_name,
+activity_id,
+        sum(case when enroll_flag = 1 then amount_u end ) as 交易赛活动交易额
+        ,count(distinct case when trade_flag = 1 AND enroll_flag = 1 then uid end) as 活动交易人数
+        ,count(distinct case when first_trade_flag = 1 and enroll_flag = 1 then uid else null end) as 活动FTT人数
+        ,count(distinct case when 2d_trade_flag = 1 and enroll_flag = 1 then uid else null end) as 活动FTT次留人数
+  		,count(distinct case when vip_flag = 1 and enroll_flag = 1 then uid else null end) as 活动VIP报名人数
+  		,count(distinct case when vip_flag = 1 and enroll_flag = 1 AND trade_flag = 1 then uid else null end) as 活动VIP交易人数
+  		,sum(distinct case when vip_flag = 1 and enroll_flag = 1 AND trade_flag = 1 then amount_u else 0 end) as 活動VIP交易額
+    from (
+        select DISTINCT
+      		e.uid AS uid
+            ,e.dt as 日期
+            ,cast(dt.dt as varchar)    as 文本日期
+            ,cast(dt.yearweek_day as varchar)  as 周
+            ,cast(dt.yearmonth as varchar)     as 月
+            ,cast(dt.yearqtr as varchar)      as 季
+            ,a.amount_u
+      		,case when c.uid is not null then 1 else 0 end as first_trade_flag
+      		,case when d.uid is not null then 1 else 0 end as 2d_trade_flag
+      		,case when e.vip_level > 0 then 1 else 0 end as vip_flag
+      		,case when b.uid is not null then 1 else 0 end AS enroll_flag -- 标识 是否报名参与交易赛活动
+      		,case when a.uid is not null then 1 else 0 end AS trade_flag
+      		,CASE WHEN f.first_date IS NULL OR f.first_date > e.dt THEN '未入金用户'
+     		   WHEN DATEDIFF(e.dt, f.first_date) BETWEEN 0 AND 13 THEN '新用户'
+               WHEN DATEDIFF(e.dt, f.first_date ) > 13 THEN '老用户'
+             END AS user_type,
+             b.activity_level,
+             activity_type_name,
+creator,
+begin_time,
+end_time,
+activity_name,
+activity_id
+        from (select uid,dt,vip_level from dwd.dwd_user_info_ss where dt between '${begin_date}' and '${end_date}') AS e -- VIP数据
+       left JOIN dim.dim_date AS dt on e.dt = dt.dt
+       left JOIN (
+                select uid,stats_date,
+                    sum(amount_u) as amount_u
+                from trade_day_data
+          		WHERE stats_date between '${begin_date}' and '${end_date}'
+                group by 1,2
+        )a -- 交易数据
+         	on e.dt = a.stats_date AND e.uid = a.uid
+        join (
+            select dt.dt,t.uid,t.apply_date,t.end_date,activity_level,activity_type_name,
+creator,
+begin_time,
+end_time,
+activity_name,
+activity_id
+            from (select * from dim.dim_date where dt between '${begin_date}' and '${end_date}') dt
+            left join (
+                select * from 
+                (
+                    select  a.uid,apply_date,date(b.end_time) as end_date,
+                    case get_json_string(PARSE_JSON(c.extra),'$.level')
+                        when  1 then 'S' 
+                        when 2 then 'A'
+                        when 3 then 'B+'
+                        when 4 then 'B'
+                        when 5 then 'C'
+                    end as activity_level,activity_type_name,
+b.creator,
+b.begin_time,
+b.end_time,
+activity_name,
+a.activity_id
+                    from dwd.dwd_activity_apply_user_info a
+                    inner join dwd.dwd_activity_info  b
+                        on a.activity_id=b.activity_id
+                    inner join `db_activity`.`tb_activity` c on b.activity_id = c.id
+                    where a.status = 1
+                        --and  date(end_time) >= '${end_date}'
+                        --and activity_type in(1,3,4,12,13,14,17,18,25,28)
+                    ${if(len(activity_type_name_limit) > 0, "and b.activity_type_name IN ('" + activity_type_name_limit + "')", "")}
+                    ${if(len(activity_id_limit) > 0, "and b.activity_id IN (" + activity_id_limit + ")", "")}
+                    ${if(len(creator_limit) > 0, "and b.creator IN ('" + creator_limit + "')", "")}-- creator
+                ) t 
+                where 1=1
+                ${if(len(activity_level) > 0, "and activity_level IN ('" + activity_level + "')", "")}
+            ) as t
+                on dt.dt >= apply_date and dt.dt <= end_date
+        )b -- 报名数据
+            on e.uid = b.uid AND e.dt = b.dt
+        left join ftt_data as c -- 首交数据
+      		on e.uid = c.uid and e.dt = c.first_date
+      	left join (
+          	select DISTINCT uid,stats_date
+            from trade_day_data
+        ) AS d -- 次留数据
+      		ON c.uid = d.uid
+      			AND date_add(c.first_date,interval 1 day) = d.stats_date
+       LEFT JOIN (
+           SELECT a.uid,
+                  MIN(a.first_date) AS first_date
+           FROM dws.dws_trade_first_type_order a
+           GROUP BY 1 
+        ) AS f ON e.uid = f.uid
+    )s
+   ${if(len(user_type_limit) > 0, "where user_type IN ('" + user_type_limit + "')", "")}
+    group by 1,2,3,4,5,6,7,8
+),
+t0 as 
+(
+     select 
+    case 
+        when '${date_typ}' = '日' then 文本日期
+        when '${date_typ}' = '周' then 周
+        when '${date_typ}' = '月' then 月
+        when '${date_typ}' = '季' then 季
+    end as 日期
+  		,sum(amount_u) as 整体交易额
+        ,count(distinct case when trade_flag = 1 then uid end) as 整体交易人数
+        ,count(distinct case when 2d_trade_flag = 1 then uid else null end) as 整体FTT次留人数
+  		,count(distinct case when vip_flag = 1 then uid else null end) as 整体VIP人数
+  		,count(distinct case when vip_flag = 1 AND trade_flag = 1 then uid else null end) as 整体VIP交易人数
+  		,sum(distinct case when vip_flag = 1 AND amount_u > 0 then amount_u else 0 end) as 整体VIP交易額
+    from (
+        select DISTINCT
+      		e.uid AS uid
+            ,e.dt as 日期
+            ,cast(dt.dt as varchar)    as 文本日期
+            ,cast(dt.yearweek_day as varchar)  as 周
+            ,cast(dt.yearmonth as varchar)     as 月
+            ,cast(dt.yearqtr as varchar)      as 季
+            ,a.amount_u
+      		,case when c.uid is not null then 1 else 0 end as first_trade_flag
+      		,case when d.uid is not null then 1 else 0 end as 2d_trade_flag
+      		,case when e.vip_level > 0 then 1 else 0 end as vip_flag
+      		,case when b.uid is not null then 1 else 0 end AS enroll_flag -- 标识 是否报名参与交易赛活动
+      		,case when a.uid is not null then 1 else 0 end AS trade_flag
+      		,CASE WHEN f.first_date IS NULL OR f.first_date > e.dt THEN '未入金用户'
+     		   WHEN DATEDIFF(e.dt, f.first_date) BETWEEN 0 AND 13 THEN '新用户'
+               WHEN DATEDIFF(e.dt, f.first_date ) > 13 THEN '老用户'
+             END AS user_type,
+             b.activity_level
+             ,activity_type_name,
+creator,
+begin_time,
+end_time,
+activity_name,
+activity_id
+        from (select uid,dt,vip_level from dwd.dwd_user_info_ss where dt between '${begin_date}' and '${end_date}') AS e -- VIP数据
+       left JOIN dim.dim_date AS dt on e.dt = dt.dt
+       left JOIN (
+                select uid,stats_date,
+                    sum(amount_u) as amount_u
+                from trade_day_data
+          		WHERE stats_date between '${begin_date}' and '${end_date}'
+                group by 1,2
+        )a -- 交易数据
+         	on e.dt = a.stats_date AND e.uid = a.uid
+        left join (
+            select dt.dt,t.uid,t.apply_date,t.end_date,activity_level,activity_type_name,
+creator,
+begin_time,
+end_time,
+activity_name,
+activity_id
+            from (select * from dim.dim_date where dt between '${begin_date}' and '${end_date}') dt
+            left join (
+                select * from 
+                (
+                    select  a.uid,apply_date,date(b.end_time) as end_date,
+                    case get_json_string(PARSE_JSON(c.extra),'$.level')
+                        when  1 then 'S' 
+                        when 2 then 'A'
+                        when 3 then 'B+'
+                        when 4 then 'B'
+                        when 5 then 'C'
+                    end as activity_level,b.activity_type_name,
+b.creator,
+b.begin_time,
+b.end_time,
+b.activity_name,
+b.activity_id
+                    from dwd.dwd_activity_apply_user_info a
+                    inner join dwd.dwd_activity_info  b
+                        on a.activity_id=b.activity_id
+                    inner join `db_activity`.`tb_activity` c on b.activity_id = c.id
+                    where a.status = 1
+                        --and  date(end_time) >= '${end_date}'
+                        --and activity_type in(1,3,4,12,13,14,17,18,25,28)
+                    ${if(len(activity_type_name_limit) > 0, "and b.activity_type_name IN ('" + activity_type_name_limit + "')", "")}
+                    ${if(len(activity_id_limit) > 0, "and b.activity_id IN (" + activity_id_limit + ")", "")}
+                    ${if(len(creator_limit) > 0, "and b.creator IN ('" + creator_limit + "')", "")}-- creator
+                ) t 
+                where 1=1
+                ${if(len(activity_level) > 0, "and activity_level IN ('" + activity_level + "')", "")}
+            ) as t
+                on dt.dt >= apply_date and dt.dt <= end_date
+        )b -- 报名数据
+            on e.uid = b.uid AND e.dt = b.dt
+        left join ftt_data as c -- 首交数据
+      		on e.uid = c.uid and e.dt = c.first_date
+      	left join (
+          	select DISTINCT uid,stats_date
+            from trade_day_data
+        ) AS d -- 次留数据
+      		ON c.uid = d.uid
+      			AND date_add(c.first_date,interval 1 day) = d.stats_date
+       LEFT JOIN (
+           SELECT a.uid,
+                  MIN(a.first_date) AS first_date
+           FROM dws.dws_trade_first_type_order a
+           GROUP BY 1 
+        ) AS f ON e.uid = f.uid
+    )s
+   ${if(len(user_type_limit) > 0, "where user_type IN ('" + user_type_limit + "')", "")}
+    group by 1
+)
+
+select m.日期,
+m.activity_level,
+m.activity_type_name 活动模版,
+m.creator as 创建人,
+m.begin_time as 活动开始时间,
+m.end_time as 活动结束时间,
+m.activity_name as 活动名称,
+m.activity_id as 活动ID
+    ,t0.整体交易额
+    ,m.交易赛活动交易额
+    ,m.活动交易人数
+    ,t0.整体交易人数
+    ,m.活动FTT人数
+    ,t1.整体FTT人数
+    ,m.活动FTT次留人数
+    ,t1.整体FTT次留人数
+    ,m.活动VIP报名人数
+    ,t2.整体VIP人数
+    ,m.活动VIP交易人数
+    ,t2.整体VIP交易人数
+    ,m.活動VIP交易額
+    ,t2.整体VIP交易額
+    ,t3.整体交易额提升幅度
+from m 
+left join t0 on m.日期=t0.日期 
+left JOIN (
+   SELECT 
+   case 
+        when '${date_typ}' = '日' then c.first_date
+        when '${date_typ}' = '周' then dd.yearweek_day
+        when '${date_typ}' = '月' then dd.yearmonth
+        when '${date_typ}' = '季' then dd.yearqtr
+    end as stats_date,
+   count(DISTINCT c.uid) AS 整体FTT人数
+  		,count(DISTINCT d.uid) AS 整体FTT次留人数
+   FROM ftt_data as c
+   left join (
+     select DISTINCT uid,stats_date
+     from trade_day_data--dws.dws_trade_type_day
+   ) AS d -- 次留数据
+    ON c.uid = d.uid AND date_add(c.first_date,interval 1 day) = d.stats_date
+    left join dim.dim_date as dd on c.first_date = dd.dt
+   GROUP BY 1
+) AS t1 on m.日期=t1.stats_date
+left JOIN (
+   SELECT 
+   case 
+        when '${date_typ}' = '日' then t1.dt
+        when '${date_typ}' = '周' then dd.yearweek_day
+        when '${date_typ}' = '月' then dd.yearmonth
+        when '${date_typ}' = '季' then dd.yearqtr
+    end as stats_date,
+   count(DISTINCT t1.uid) AS 整体VIP人数
+  		,count(DISTINCT t2.uid) AS 整体VIP交易人数
+  		,sum(t2.amount_u) AS 整体VIP交易額
+   FROM (
+     select uid,dt
+     FROM dwd.dwd_user_info_ss AS t
+     where dt between '${begin_date}' and '${end_date}'
+          AND vip_level > 0
+   ) AS t1
+   left join (
+     	select uid,stats_date,sum(amount_u) AS amount_u1
+        from trade_day_data
+     	GROUP BY 1,2
+   ) AS t2 -- 次留数据
+   ON t1.uid = t2.uid and t1.dt = t2.stats_date
+   left join dim.dim_date as dd on t1.dt = dd.dt
+   GROUP BY 1
+) AS t2 on m.日期=t2.stats_date
+left join res2 t3 on  m.日期=t3.日期 and m.activity_id=t3.活动ID
