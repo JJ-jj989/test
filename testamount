@@ -1,6 +1,6 @@
-with   trade_type_name_mapping AS (
+WITH trade_type_name_mapping AS (
         SELECT  id
-               ,CASE WHEN id in(3,4) THEN '标准合约自主'
+               ,CASE WHEN id IN(3,4) THEN '标准合约自主'
                      WHEN id = 8 THEN '标准合约跟单'
                      WHEN id = 5 THEN '永续合约自主'
                      WHEN id = 11 THEN '永续合约网格自主'
@@ -13,8 +13,9 @@ with   trade_type_name_mapping AS (
                      WHEN id = 17 THEN 'MT5交易自主'
                      WHEN id = 18 THEN '永续合约固定保证金跟单'
                      WHEN id = 20 THEN '现货单笔跟单'
-                     when id = 21 then '现货单笔带单'
-                     when id= 22 then '永续币本位自主'
-                     ELSE name end name
+                     WHEN id = 21 THEN '现货单笔带单'
+                     WHEN id = 22 THEN '永续币本位自主'
+                     ELSE name END AS name
         FROM dim.dim_trade_final_type
-) select amount from  trade_type_name_mapping  
+) 
+SELECT id, name FROM trade_type_name_mapping; 
