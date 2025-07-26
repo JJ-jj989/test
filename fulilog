@@ -1,0 +1,72 @@
+with user as (
+select  uid,date(log_date)  as dt from s3_log.client_event_log  a
+where event in ('home_welfare_new_newuser','home_welfare_new_advance')
+and log_date between '2025-06-16' and '2025-06-30'
+group by 1,2)
+,user1 as (
+select  uid from s3_log.client_event_log  a
+where event in ('home_welfare_new_newuser','home_welfare_new_advance')
+and log_date between '2025-06-16' and '2025-06-30'
+group by 1)
+,
+res1 as 
+(select count(distinct device_id)  as DAU, count(distinct uid)   as 福利中心访问人数 from s3_log.client_event_log  a
+where event in ('home_welfare_new_newuser','home_welfare_new_advance')
+and log_date between '2025-06-16' and '2025-06-30'
+)
+,res2 as (
+  select count(distinct case when b.uid  is null then a.uid end) as 福利中心访问用户数中未平台首交用户 ,
+  count(distinct case when b.uid  is not null then a.uid end) as 福利中心访问用户数中已平台首交用户 
+   ,count(distinct case when d.uid  is not null then a.uid end) as 福利中心访问用户数中已入金用户
+   ,count(distinct case when d.uid  is  null then a.uid end) as 福利中心访问用户数中未入金用户
+  ,count(distinct case when f.total_asset_u=0  then a.uid end) as 福利中心访问用户资产余额为0用户
+   ,count(distinct case when f.total_asset_u>=0 and f.total_asset_u<10  then a.uid end) as 福利中心访问用户中未入金用户
+   ,count(distinct case when f.total_asset_u>=10 and f.total_asset_u<1000  then a.uid end) as 福利中心访问用户资产余额小于1000用户
+  ,count(distinct case when f.total_asset_u>=10 and f.total_asset_u>1000  then a.uid end) as 福利中心访问用户资产余额大于1000用户
+ ,count(distinct case when g.vip_level>0   then a.uid end) as vip用户数
+   from user1 a 
+   left join (select distinct a.uid 
+   from dws.dws_trade_first_user_order a join user1 b on a.uid=b.uid
+   )b on a.uid=b.uid 
+  left join (select a.uid from 
+   dws.dws_asset_wallet_first_tag  a 
+   join user1 c on a.uid=c.uid
+   )d on a.uid=d.uid
+  left join (select a.uid,total_asset_u from 
+  dws.dws_asset_user_account a  
+   join user1 c on a.uid=c.uid
+)f on a.uid=f.uid
+  left join dwd.dwd_user_info g on a.uid=g.uid
+  )
+  ,res3 as (
+select 
+  count(distinct case when c.uid  is not null and is_cntr=1 then a.uid end) as 福利中心访问用户数中已完成合约首次交易用户
+  ,count(distinct case when c.uid  is not null and a.dt=c.dt and is_spot=1 then a.uid end) as 福利中心访问用户数中当日自主现货交易用户
+  ,count(distinct case when c.uid  is not null and a.dt=c.dt and is_cntr=1 then a.uid end) as 福利中心访问用户数中当日自主合约交易用户
+  ,count(distinct case when c.uid  is not null and 
+trade_behavior_type='跟随' and a.dt=c.dt and is_spot=1 then a.uid end) as 福利中心访问用户数中当日跟单交易用户 
+ from user   a
+    left join (select a.uid,is_cntr,is_swap,is_spot,trade_behavior_type,date(stats_date) as dt 
+   from dws.dws_trade_type_day a
+    join dim.dim_trade_final_type b on a.final_trade_type=b.id 
+             where stats_date between   '2025-06-16' and '2025-06-30'
+           group by 1,2,3,4,5,6 )c on a.uid=c.uid  and a.dt=c.dt)
+  select '2025-06-16-2025-06-30',
+  DAU,
+  福利中心访问人数,
+  福利中心访问用户数中未平台首交用户 ,
+  福利中心访问用户数中已平台首交用户 ,
+  福利中心访问用户数中已完成合约首次交易用户,
+福利中心访问用户数中当日自主现货交易用户, 
+福利中心访问用户数中当日自主合约交易用户,
+福利中心访问用户数中当日跟单交易用户 ,
+福利中心访问用户数中已入金用户, 
+福利中心访问用户数中未入金用户,
+福利中心访问用户资产余额为0用户,
+ 福利中心访问用户中未入金用户,
+ 福利中心访问用户资产余额小于1000用户,
+  福利中心访问用户资产余额大于1000用户,
+  vip用户数
+  from res1
+  left join res2 on 1=1
+  left join res3 on 1=1
