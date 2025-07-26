@@ -1,20 +1,23 @@
-with   trade_type_name_mapping AS (
-        SELECT  id
-               ,CASE WHEN id in(3,4) THEN '标准合约自主'
-                     WHEN id = 8 THEN '标准合约跟单'
-                     WHEN id = 5 THEN '永续合约自主'
-                     WHEN id = 11 THEN '永续合约网格自主'
-                     WHEN id = 9 THEN '永续合约仓位跟单'
-                     WHEN id = 10 THEN '币安合约跟单'
-                     WHEN id = 1 THEN '现货自主直接'
-                     WHEN id = 2 THEN '现货(标准)网格自主'
-                     WHEN id = 16 THEN '现货无限网格自主'
-                     WHEN id = 7 THEN '现货网格跟单'
-                     WHEN id = 17 THEN 'MT5交易自主'
-                     WHEN id = 18 THEN '永续合约固定保证金跟单'
-                     WHEN id = 20 THEN '现货单笔跟单'
-                     when id = 21 then '现货单笔带单'
-                     when id= 22 then '永续币本位自主'
-                     ELSE name end name
-        FROM dim.dim_trade_final_type
-) select amount from  trade_type_name_mapping  
+WITH trade_type_name_mapping AS (
+    SELECT id,
+           CASE WHEN id IN (3, 4) THEN '标准合约自主'
+                WHEN id = 8 THEN '标准合约跟单'
+                WHEN id = 5 THEN '永续合约自主'
+                WHEN id = 11 THEN '永续合约网格自主'
+                WHEN id = 9 THEN '永续合约仓位跟单'
+                WHEN id = 10 THEN '币安合约跟单'
+                WHEN id = 1 THEN '现货自主直接'
+                WHEN id = 2 THEN '现货(标准)网格自主'
+                WHEN id = 16 THEN '现货无限网格自主'
+                WHEN id = 7 THEN '现货网格跟单'
+                WHEN id = 17 THEN 'MT5交易自主'
+                WHEN id = 18 THEN '永续合约固定保证金跟单'
+                WHEN id = 20 THEN '现货单笔跟单'
+                WHEN id = 21 THEN '现货单笔带单'
+                WHEN id = 22 THEN '永续币本位自主'
+                ELSE name 
+           END AS name
+    FROM dim.dim_trade_final_type
+)
+SELECT amount 
+FROM trade_type_name_mapping; 
